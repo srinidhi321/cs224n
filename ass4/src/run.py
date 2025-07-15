@@ -64,20 +64,15 @@ mconf = models.GPTConfig(
 
 model = None
 if args.variant == 'vanilla':
-    # TODO: [part c] Make some model here
-    ### YOUR CODE HERE ###
-    pass
-    ### END YOUR CODE ###
+    model = models.GPT(mconf)
 elif args.variant == 'rope':
     # TODO: [part g] Make some other model here
     # set mconf.rope parameter
-    ### YOUR CODE HERE ###
-    pass
-    ### END YOUR CODE ###
+    mconf.rope = True
+    model = models.GPT(mconf)
 else:
     raise ValueError("Unknown model variant")
 
-print('Model on device: ', next(model.parameters()).device)
 
 # Perform pretraining, finetuning, or evaluation
 if args.function == 'pretrain':
@@ -101,9 +96,19 @@ if args.function == 'pretrain':
     # num_workers=4
     # writer=writer
 
-    ### YOUR CODE HERE ###
-    pass
-    ### END YOUR CODE ###
+    trainer_config = trainer.TrainerConfig()
+    trainer_config.max_epochs = 650
+    trainer_config.batch_size=128
+    trainer_config.learning_rate=args.pretrain_lr
+    trainer_config.lr_decay=True
+    trainer_config.warmup_tokens=512*20
+    trainer_config.final_tokens=650*len(pretrain_dataset)*block_size
+    trainer_config.num_workers=4
+    trainer_config.writer=writer
+    trainer = trainer.Trainer(model, pretrain_dataset, None, trainer_config)
+    trainer.train()
+    torch.save(model.state_dict(), args.writing_params_path)
+
 elif args.function == 'finetune':
     assert args.writing_params_path is not None
     assert args.finetune_corpus_path is not None
@@ -118,6 +123,36 @@ elif args.function == 'finetune':
     #         into the model
     #     2. Finetune the model on this corpus
     #     3. Save the resulting model in args.writing_params_path
+    trainer_config = trainer.TrainerConfig()
+    if args.reading_params_path is not None:
+        model.load_state_dict(torch.load(args.reading_params_path))
+        trainer_config.max_epochs=10
+        trainer_config.batch_size=256
+        trainer_config.learning_rate=args.finetune_lr
+        trainer_config.lr_decay=True
+        trainer_config.warmup_tokens=512*20
+        trainer_config.final_tokens=200*len(pretrain_dataset)*block_size
+        trainer_config.num_workers=4
+        trainer_config.writer=writer
+    else:
+        trainer_config.max_epochs=75
+        trainer_config.batch_size=256
+        trainer_config.learning_rate=args.finetune_lr
+        trainer_config.lr_decay=True
+        trainer_config.warmup_tokens=512*20
+        trainer_config.final_tokens=200*len(pretrain_dataset)*block_size
+        trainer_config.num_workers=4
+        trainer_config.writer=writer
+
+    name_dataset = dataset.NameDataset(pretrain_dataset,
+                open(args.finetune_corpus_path, encoding='utf-8').read())
+
+    trainer = trainer.Trainer(model, name_dataset, None, trainer_config)
+    trainer.train()
+    torch.save(model.state_dict(), args.writing_params_path)
+
+    
+    
     # - Make sure to use the following hyperparameters:
     #     [part d] Hyperparameters for finetuning WITHOUT a pretrained model:
     #         max_epochs=75
@@ -147,6 +182,7 @@ elif args.function == 'evaluate':
     assert args.outputs_path is not None
     assert args.reading_params_path is not None
     assert args.eval_corpus_path is not None
+    model = model.to(device)
     model.load_state_dict(torch.load(args.reading_params_path))
     correct = 0
     total = 0

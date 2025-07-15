@@ -35,11 +35,13 @@ def precompute_rotary_emb(dim, max_positions):
     the embedding.
     """
 
-    rope_cache = None
-    # TODO: [part g]
-    ### YOUR CODE HERE ###
-    pass
-    ### END YOUR CODE ###
+    rope_cache = torch.zeros([max_positions, dim // 2, 2], dtype=torch.float32)
+    # print("rope_cache dim: ", rope_cache.shape)
+    for t in range(0, max_positions):
+        for i in range(0, dim // 2):
+            theta_i = 1.0 / math.pow(10000, -2*i/dim)
+            rope_cache[t][i][0] = math.cos(t*theta_i)
+            rope_cache[t][i][1] = math.sin(t*theta_i)
     return rope_cache
 
 
@@ -57,9 +59,21 @@ def apply_rotary_emb(x, rope_cache):
     # truncate the precomputed values to match the length of the sequence.
 
     rotated_x = None
-    ### YOUR CODE HERE ###
-    pass
-    ### END YOUR CODE ###
+    B, nh, T, hs = x.size()
+    new_rope_cache = rope_cache[:T, :, :]
+    # print("new_rope_cache dim: ", new_rope_cache.shape)
+    temp_x = x.view(B, nh, T, hs // 2, 2)
+    # print("temp_x dim: ", temp_x.shape)
+    x_i = torch.view_as_complex(temp_x)
+    # print("x_i dim: ", x_i.shape)
+    rope_cache_i = torch.view_as_complex(new_rope_cache)
+    # print("rope_cache_i dim: ", rope_cache_i.shape)
+    dot = rope_cache_i * x_i
+    # print("dot dim: ", dot.shape)
+    rotated_x = torch.view_as_real(dot)
+    # print("rotated_x dim: ", rotated_x.shape)
+    rotated_x = rotated_x.view(B, nh, T, hs)
+    # print("rotated_x dim: ", rotated_x.shape)
     return rotated_x
 
 class CausalSelfAttention(nn.Module):
@@ -84,11 +98,7 @@ class CausalSelfAttention(nn.Module):
             # TODO: [part g] Precompute the cos and sin values for RoPE and
             # store them in rope_cache.
             # Hint: The maximum sequence length is given by config.block_size.
-            rope_cache = None
-            ### YOUR CODE HERE ###
-            pass
-            ### END YOUR CODE ###
-
+            rope_cache = precompute_rotary_emb(config.n_embd //  config.n_head, config.block_size)
             self.register_buffer("rope_cache", rope_cache)
 
         # regularization
@@ -111,9 +121,8 @@ class CausalSelfAttention(nn.Module):
 
         if self.rope:
             # TODO: [part g] Apply RoPE to the query and key.
-            ### YOUR CODE HERE ###
-            pass
-            ### END YOUR CODE ###
+            q = apply_rotary_emb(q, self.rope_cache)
+            k = apply_rotary_emb(k, self.rope_cache)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -185,3 +194,146 @@ class CausalCrossAttention(nn.Module):
         # output projection
         y = self.resid_drop(self.proj(y))
         return y
+
+def test_precompute_rotary_emb(dim, max_positions):
+    """
+    RoPE uses the following sinusoidal functions to encode positions:
+
+    cos(t theta_i) and sin(t theta_i)
+        where t is the position and
+              theta_i = 1/10000^(-2(i-1)/dim) for i in [1, dim/2]
+
+    Since the maximum length of sequences is known, we can precompute
+    these values to speed up training.
+
+    Implement the precompute_rotary_emb function that returns a tensor of
+    shape (max_positions, dim/2, 2) where the last dimension contains
+    the cos and sin values for each position and each dimension of
+    the embedding.
+    """
+
+    rope_cache = None
+    # TODO: [part g]
+    ### YOUR CODE HERE ###
+     # Initialize RoPE cache with positions
+    rope_cache = torch.arange(max_positions)[..., None, None].expand(-1, dim // 2, 2)
+
+    # Compute dimension-dependent angles
+    theta = torch.tensor([1 / 10000**(2 * (i - 1) / dim) for i in range(1, dim // 2 + 1)])
+    rope_cache = rope_cache * theta[None, ..., None]
+
+    # Apply sinusoidal functions
+    rope_cache[..., ::2] = torch.cos(rope_cache[..., ::2])
+    rope_cache[..., 1::2] = torch.sin(rope_cache[..., 1::2])
+    ### END YOUR CODE ###
+    return rope_cache
+
+
+def test_apply_rotary_emb(x, rope_cache):
+    """Apply the RoPE to the input tensor x."""
+    # TODO: [part g]
+    # You might find the following functions useful to convert
+    # between real and complex numbers:
+
+    # torch.view_as_real - https://pytorch.org/docs/stable/generated/torch.view_as_real.html
+    # torch.view_as_complex - https://pytorch.org/docs/stable/generated/torch.view_as_complex.html
+
+    # Note that during inference, the length of the sequence might be different
+    # from the length of the precomputed values. In this case, you should use
+    # truncate the precomputed values to match the length of the sequence.
+
+    rotated_x = None
+    ### YOUR CODE HERE ###
+    b, h, l, d = x.shape  # (batch_size, num_head, seq_len, head_dim)
+
+    # Truncate rope cache to align with the sequnece length
+    rope_cache = rope_cache[:l]  # (l, d // 2, 2)
+
+    # Group the embedding dimension by a factor of 2
+    x = x.reshape(b, h, l, d // 2, 2)
+
+    # Apply RoPE following eq (4) in pdf
+    rope_cache = rope_cache[None, None, ...]
+    rotated_x = torch.view_as_complex(rope_cache) * torch.view_as_complex(x)  # (b, h, l, d // 2)
+    
+    # Recover the original dimension 
+    rotated_x = torch.view_as_real(rotated_x).reshape(b, h, l, d)
+    
+    ### END YOUR CODE ###
+    return rotated_x
+
+def test2_precompute_rotary_emb(dim, max_positions):
+    """
+    RoPE uses the following sinusoidal functions to encode positions:
+
+    cos(t theta_i) and sin(t theta_i)
+        where t is the position and
+              theta_i = 1/10000^(-2(i-1)/dim) for i in [1, dim/2]
+
+    Since the maximum length of sequences is known, we can precompute
+    these values to speed up training.
+
+    Implement the precompute_rotary_emb function that returns a tensor of
+    shape (max_positions, dim/2, 2) where the last dimension contains
+    the cos and sin values for each position and each dimension of
+    the embedding.
+    """
+
+    rope_cache = None
+    # TODO: [part g]
+    ### YOUR CODE HERE ###
+    assert dim % 2 == 0
+    positions = torch.arange(max_positions)
+    i = torch.arange(1, dim//2 + 1)
+    t_theta_i = torch.outer(positions, 10000**(-2*(i-1)/dim))
+    rope_cache = torch.stack([torch.cos(t_theta_i), torch.sin(t_theta_i)], dim=-1)
+    ### END YOUR CODE ###
+    return rope_cache
+
+
+def test2_apply_rotary_emb(x, rope_cache):
+    """Apply the RoPE to the input tensor x."""
+    # TODO: [part g]
+    # You might find the following functions useful to convert
+    # between real and complex numbers:
+
+    # torch.view_as_real - https://pytorch.org/docs/stable/generated/torch.view_as_real.html
+    # torch.view_as_complex - https://pytorch.org/docs/stable/generated/torch.view_as_complex.html
+
+    # Note that during inference, the length of the sequence might be different
+    # from the length of the precomputed values. In this case, you should use
+    # truncate the precomputed values to match the length of the sequence.
+
+    rotated_x = None
+    ### YOUR CODE HERE ###
+    assert x.shape[-1] % 2 == 0
+    seq_length = x.shape[-2]
+    rope_real = rope_cache[:seq_length]
+    x_real = x.view(*x.shape[:-1], x.shape[-1]//2, 2)
+    rope_cplx = torch.view_as_complex(rope_real)
+    x_cplx = torch.view_as_complex(x_real)
+    rotated_x_cplx = x_cplx * rope_cplx.unsqueeze(0).unsqueeze(0)
+    rotated_x = torch.view_as_real(rotated_x_cplx).view_as(x)
+    ### END YOUR CODE ###
+    return rotated_x
+
+if __name__ == '__main__':
+    dim = 4
+    max_len = 1
+    B, nh, T, hs = 2, 2, 1, dim
+    x = torch.rand(B, nh, T, hs)
+
+    rope_cache1 = precompute_rotary_emb(dim, max_len)
+    x1 = apply_rotary_emb(x, rope_cache1)
+
+    rope_cache2 = test_precompute_rotary_emb(dim, max_len)
+    x2 = test_apply_rotary_emb(x, rope_cache2)
+
+    print("rope_cache1.dtype: ", rope_cache1.dtype)
+    print("rope_cache2.dtype: ", rope_cache2.dtype)
+
+    print("x1: ", x1)
+    print("x2: ", x2)
+
+    print("rope_cache1 == rope_cache2: ", rope_cache1 == rope_cache2)
+    print("x1 == x2: ", x1 == x2)
